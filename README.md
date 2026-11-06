@@ -1,8 +1,6 @@
 ### Hexlet tests and linter status:
 [![Actions Status](https://github.com/i-evgenii/devops-engineer-from-scratch-project-315/actions/workflows/hexlet-check.yml/badge.svg)](https://github.com/i-evgenii/devops-engineer-from-scratch-project-315/actions)
 
-[![CI](https://github.com/i-evgenii/devops-engineer-from-scratch-project-315/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/i-evgenii/devops-engineer-from-scratch-project-315/actions/workflows/ci.yml)
-
 **Приложение:** https://app.example.com
 
 Учебный проект Hexlet: Spring Boot-приложение
