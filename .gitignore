@@ -1,0 +1,7 @@
+*.retry
+.env
+.venv/
+vault_pass
+.vault_pass
+*.log
+.DS_Store

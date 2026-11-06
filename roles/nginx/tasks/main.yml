@@ -1,0 +1,116 @@
+---
+- name: Install certbot
+  ansible.builtin.apt:
+    name: certbot
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure Nginx directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ nginx_conf_dir }}/conf.d",            owner: "root", group: "root", mode: "0755" }
+    - { path: "{{ nginx_conf_dir }}/www",               owner: "root", group: "root", mode: "0755" }
+    - { path: "{{ nginx_conf_dir }}/cache",             owner: "101",  group: "101",  mode: "0755" }
+    - { path: "{{ letsencrypt_dir }}",                  owner: "root", group: "root", mode: "0755" }
+    - { path: "{{ letsencrypt_dir }}/renewal-hooks/deploy", owner: "root", group: "root", mode: "0755" }
+
+- name: Render Nginx cache config
+  ansible.builtin.template:
+    src: cache.conf.j2
+    dest: "{{ nginx_conf_dir }}/conf.d/00-cache.conf"
+    mode: "0644"
+  notify: reload nginx
+
+- name: Check if certificate exists
+  ansible.builtin.stat:
+    path: "{{ letsencrypt_dir }}/live/{{ nginx_domain }}/fullchain.pem"
+  register: nginx_cert
+
+- name: Render HTTP-only bootstrap config
+  ansible.builtin.template:
+    src: site-http.conf.j2
+    dest: "{{ nginx_conf_dir }}/conf.d/site.conf"
+    mode: "0644"
+  when: not nginx_cert.stat.exists
+  notify: reload nginx
+
+- name: Render HTTPS config (cert already exists)
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: "{{ nginx_conf_dir }}/conf.d/site.conf"
+    mode: "0644"
+  when: nginx_cert.stat.exists
+  notify: reload nginx
+
+- name: Run Nginx reverse proxy
+  community.docker.docker_container:
+    name: nginx
+    image: "{{ nginx_image }}"
+    state: started
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ db_network }}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "{{ nginx_conf_dir }}/conf.d:/etc/nginx/conf.d:ro"
+      - "{{ letsencrypt_dir }}:/etc/letsencrypt:ro"
+      - "{{ nginx_conf_dir }}/www:/var/www/certbot:ro"
+      - "{{ nginx_conf_dir }}/cache:/var/cache/nginx"
+
+- name: Obtain Let's Encrypt certificate
+  ansible.builtin.command:
+    cmd: >
+      certbot certonly --webroot
+      -w {{ nginx_conf_dir }}/www
+      -d {{ nginx_domain }}
+      --email {{ letsencrypt_email }}
+      --agree-tos --non-interactive
+      --deploy-hook "docker exec nginx nginx -s reload || true"
+  args:
+    creates: "{{ letsencrypt_dir }}/live/{{ nginx_domain }}/fullchain.pem"
+  register: certbot_first_run
+  changed_when: certbot_first_run.rc == 0
+
+- name: Re-check certificate after certbot
+  ansible.builtin.stat:
+    path: "{{ letsencrypt_dir }}/live/{{ nginx_domain }}/fullchain.pem"
+  register: nginx_cert_recheck
+
+- name: Render final HTTPS config
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: "{{ nginx_conf_dir }}/conf.d/site.conf"
+    mode: "0644"
+  when: nginx_cert_recheck.stat.exists
+  notify: reload nginx
+
+- name: Flush handlers to apply new config
+  ansible.builtin.meta: flush_handlers
+
+- name: Setup certbot renewal deploy hook
+  ansible.builtin.copy:
+    dest: "{{ letsencrypt_dir }}/renewal-hooks/deploy/reload-nginx.sh"
+    content: |
+      #!/bin/sh
+      set -e
+      docker exec nginx nginx -t
+      docker exec nginx nginx -s reload
+    mode: "0755"
+
+- name: Ensure certbot.timer is enabled
+  ansible.builtin.systemd:
+    name: certbot.timer
+    state: started
+    enabled: true
+
+- name: Validate Nginx config
+  ansible.builtin.command: docker exec nginx nginx -t
+  changed_when: false

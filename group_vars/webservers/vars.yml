@@ -1,0 +1,27 @@
+app_name: project-devops-deploy
+app_image: ghcr.io/i-evgenii/project-devops-deploy
+app_version: "sha-a02c580"
+app_port: 8080
+app_dir: /opt/app
+app_user: yc-user
+app_secret: "{{ vault_app_secret }}"
+docker_users:
+  - i-evgeny
+  - yc-user
+firewall_allowed_ports:
+  - { port: 22, proto: tcp, comment: "SSH" }
+  - { port: 80, proto: tcp, comment: "HTTP" }
+  - { port: 443, proto: tcp, comment: "HTTPS" }
+db_name: appdb
+db_user: appuser
+db_port: 5432
+db_volume: pgdata
+db_network: app_net
+db_image: postgres:17-alpine
+db_password: "{{ vault_db_password }}"
+s3_region: ru-central1
+s3_endpoint: https://storage.yandexcloud.net
+s3_bucket: "{{ vault_s3_bucket }}"
+s3_access_key: "{{ vault_s3_access_key }}"
+s3_secret_key: "{{ vault_s3_secret_key }}"
+app_upstream: "project-devops-deploy:8080"

@@ -1,0 +1,13 @@
+---
+nginx_image: nginx:1.27-alpine
+nginx_domain: app.example.com
+letsencrypt_email: admin@example.com
+letsencrypt_dir: /etc/letsencrypt
+nginx_conf_dir: /opt/nginx
+app_upstream: "project-devops-deploy:8080"
+
+nginx_cache_zone_size: 20m
+nginx_cache_max_size: 2g
+nginx_cache_inactive: 60m
+
+nginx_client_max_body_size: 100m

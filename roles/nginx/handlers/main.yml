@@ -1,0 +1,6 @@
+---
+- name: reload nginx
+  ansible.builtin.command: docker exec nginx nginx -s reload
+  changed_when: true
+  listen: reload nginx
+  

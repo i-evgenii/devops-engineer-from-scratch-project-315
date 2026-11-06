@@ -1,0 +1,102 @@
+---
+- name: Ensure app directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
+  loop:
+    - "{{ app_dir }}/data"
+    - "{{ app_dir }}/logs"
+    - "{{ app_dir }}/config"
+
+- name: Render .env file from Vault secrets
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app_dir }}/.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0600'
+  no_log: true
+  notify: restart app
+
+- name: Pull application image
+  community.docker.docker_image:
+    name: "{{ app_image }}"
+    tag: "{{ app_version }}"
+    source: pull
+
+- name: Run database migrations
+  community.docker.docker_container:
+    name: "{{ app_name }}-migrate"
+    image: "{{ app_image }}:{{ app_version }}"
+    state: started
+    detach: false
+    cleanup: true
+    networks:
+      - name: "{{ db_network }}"
+    env_file: "{{ app_dir }}/.env"
+    command:
+      - "--spring.flyway.enabled=true"
+      - "--spring.main.web-application-type=none"
+    restart_policy: "no"
+  register: migration_result
+  failed_when: migration_result.status != 0
+
+- name: Run application container
+  community.docker.docker_container:
+    name: "{{ app_name }}"
+    image: "{{ app_image }}:{{ app_version }}"
+    state: started
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ db_network }}"
+    user: "{{ app_user }}:{{ app_user }}"
+    env_file: "{{ app_dir }}/.env"
+    volumes:
+      - "{{ app_dir }}/data:/app/data"
+      - "{{ app_dir }}/logs:/app/logs"
+      - "{{ app_dir }}/config:/app/config:ro"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+- name: Read current version file
+  ansible.builtin.slurp:
+    src: "{{ app_dir }}/version.json"
+  register: current_version_data
+  failed_when: false
+
+- name: Parse current version
+  ansible.builtin.set_fact:
+    previous_version: "{{ (current_version_data.content | b64decode | from_json).current | default('') if current_version_data.content is defined else '' }}"
+
+- name: Wait for application health check
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ app_port }}/actuator/health"
+    status_code: 200
+  register: health_result
+  until: health_result.status == 200
+  retries: 12
+  delay: 5
+  failed_when: false
+
+- name: Save new version info
+  ansible.builtin.copy:
+    content: |
+      {
+        "current": "{{ app_version }}",
+        "previous": "{{ previous_version }}",
+        "deployed_at": "{{ ansible_date_time.iso8601 }}"
+      }
+    dest: "{{ app_dir }}/version.json"
+    mode: '0644'
+  when: health_result.status is defined and health_result.status == 200
+
+- name: Rollback if health check failed
+  ansible.builtin.include_tasks: rollback.yml
+  when: health_result.status is not defined or health_result.status != 200

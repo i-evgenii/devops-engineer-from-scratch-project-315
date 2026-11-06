@@ -1,0 +1,117 @@
+- name: Configure server with Docker
+  hosts: webservers
+  become: true
+  serial: 1
+  tasks:
+    - name: Update packages cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install pip and packages
+      ansible.builtin.include_role:
+        name: geerlingguy.pip
+    
+    - name: Install docker
+      ansible.builtin.include_role:
+        name: geerlingguy.docker
+
+    - name: Create yc-user
+      ansible.builtin.user:
+        name: yc-user
+        state: present
+        create_home: true
+        shell: /bin/bash
+        groups: docker
+        append: true
+        comment: "Application runtime user"
+
+    - name: Add users to docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users }}"
+      when: item != 'root'
+
+    - name: Configure UFW — default deny incoming
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+    
+    - name: Configure UFW — default allow outgoing
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+    
+    - name: Allow required ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+        comment: "{{ item.comment }}"
+      loop: "{{ firewall_allowed_ports }}"
+    
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+    - name: Create Docker network
+      community.docker.docker_network:
+        name: "{{ db_network }}"
+        driver: bridge
+        state: present
+
+    - name: Create PostgreSQL volume
+      community.docker.docker_volume:
+        name: "{{ db_volume }}"
+        state: present
+
+    - name: Run PostgreSQL container
+      community.docker.docker_container:
+        name: db
+        image: "{{ db_image }}"
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: "{{ db_network }}"
+        volumes:
+          - "{{ db_volume }}:/var/lib/postgresql/data"
+        env:
+          POSTGRES_DB: "{{ db_name }}"
+          POSTGRES_USER: "{{ db_user }}"
+          POSTGRES_PASSWORD: "{{ db_password }}"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U {{ db_user }} -d {{ db_name }}"]
+          interval: 5s
+          timeout: 3s
+          retries: 10
+          start_period: 10s
+
+    - name: Wait for PostgreSQL to become healthy
+      community.docker.docker_container_info:
+        name: db
+      register: db_info
+      until: db_info.container.State.Health.Status == "healthy"
+      retries: 30
+      delay: 2
+
+    - name: Deploy app
+      ansible.builtin.include_role:
+        name: app
+
+    - name: Configure logrotate for app logs
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/{{ app_name }}
+        content: |
+          {{ app_dir }}/logs/*.log {
+              daily
+              rotate 7
+              compress
+              missingok
+              notifempty
+          }
+        mode: '0644'
+
+    - name: Configure Nginx and TLS
+      ansible.builtin.include_role:
+        name: nginx

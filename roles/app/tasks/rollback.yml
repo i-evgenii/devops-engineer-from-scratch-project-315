@@ -1,0 +1,43 @@
+---
+- name: Read previous version from file
+  ansible.builtin.slurp:
+    src: "{{ app_dir }}/version.json"
+  register: version_data
+  failed_when: false
+
+- name: Parse previous version
+  ansible.builtin.set_fact:
+    rollback_version: "{{ (version_data.content | b64decode | from_json).previous | default('') if version_data.content is defined else '' }}"
+
+- name: Fail if no previous version
+  ansible.builtin.fail:
+    msg: "No previous version"
+  when: rollback_version | length == 0
+
+- name: Rollback to previous image
+  community.docker.docker_container:
+    name: "{{ app_name }}"
+    image: "{{ app_image }}:{{ rollback_version }}"
+    state: started
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ db_network }}"
+    user: "{{ app_user }}:{{ app_user }}"
+    ports:
+      - "{{ app_port }}:8080"
+    env_file: "{{ app_dir }}/.env"
+    volumes:
+      - "{{ app_dir }}/data:/app/data"
+      - "{{ app_dir }}/logs:/app/logs"
+      - "{{ app_dir }}/config:/app/config:ro"
+
+- name: Update version.json after successful rollback
+  ansible.builtin.copy:
+    content: |
+      {
+        "current": "{{ rollback_version }}",
+        "previous": "",
+        "deployed_at": "{{ ansible_date_time.iso8601 }}"
+      }
+    dest: "{{ app_dir }}/version.json"
+    mode: '0644'
